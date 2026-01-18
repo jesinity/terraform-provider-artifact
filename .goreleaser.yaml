@@ -1,3 +1,5 @@
+version: 2
+
 project_name: terraform-provider-artifact
 
 before:
@@ -21,8 +23,6 @@ archives:
   - format: zip
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
-    files:
-      - terraform-provider-artifact
 
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_SHA256SUMS"
@@ -31,12 +31,9 @@ signs:
   - artifacts: checksum
     args:
       - "--batch"
+      - "--pinentry-mode=loopback"
+      - "--passphrase={{ .Env.GPG_PASSPHRASE }}"
       - "--local-user={{ .Env.GPG_FINGERPRINT }}"
       - "--output={{ .Signature }}"
       - "--detach-sign"
       - "{{ .Artifact }}"
-
-release:
-  github:
-    owner: YOUR_GITHUB_ORG
-    name: terraform-provider-artifact
