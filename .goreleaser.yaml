@@ -30,6 +30,7 @@ checksum:
 signs:
   - artifacts: checksum
     cmd: gpg
+    signature: "${artifact}.sig"
     args:
       - "--batch"
       - "--yes"
@@ -39,4 +40,4 @@ signs:
       - "--local-user"
       - "{{ .Env.GPG_FINGERPRINT }}"
       - "--detach-sign"
-      - "{{ .Artifact }}"
+      - "${artifact}"
