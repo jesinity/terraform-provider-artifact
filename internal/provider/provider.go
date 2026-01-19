@@ -33,6 +33,8 @@ func (p *artifactProvider) Resources(_ context.Context) []func() resource.Resour
 	return []func() resource.Resource{
 		resources.NewDownloadResource,
 		resources.NewZipResource,
+		resources.NewMavenDownloadResource,
+		resources.NewPyPIDownloadResource,
 	}
 }
 

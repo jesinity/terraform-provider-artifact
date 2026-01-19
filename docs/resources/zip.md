@@ -1,45 +1,35 @@
----
-page_title: "artifact_zip Resource"
-description: "Packages a directory into a ZIP file."
----
+# artifact_zip
 
-# artifact_zip (Resource)
+Packages a directory into a ZIP archive.
 
-Creates a ZIP archive from a directory.
+This is useful for producing deployment artifacts such as:
+- AWS Lambda bundles
+- Kafka Connect plugins
+- MSK custom plugins
+- Generic uploadable artifacts
 
-## Example usage
+## Example
 
 ```hcl
-resource "artifact_zip" "msk_plugin" {
-  input_dir   = "${path.module}/data/confluentinc-kafka-connect-s3-11.0.8"
-  output_path = "${path.module}/data/msk-s3-plugin.zip"
-  include     = ["**/*"]
-}
-
-output "zip_sha" {
-  value = artifact_zip.msk_plugin.zip_sha256
+resource "artifact_zip" "plugin" {
+  input_dir  = "${path.module}/plugin"
+  output_path = "${path.module}/plugin.zip"
 }
 ```
 
 ## Arguments
 
-- `input_dir` (String, Required)  
-  Directory to zip.
-
-- `output_path` (String, Required)  
-  Output zip file path.
-
-- `include` (List(String), Optional)  
-  Glob patterns to include (implementation-defined).  
-  If omitted, defaults to including everything.
+| Name | Description |
+|----|----|
+| `input_dir` | Directory to package |
+| `output_path` | Path to resulting ZIP file |
+| `include` | Glob patterns to include |
+| `exclude` | Glob patterns to exclude |
 
 ## Attributes
 
-- `zip_sha256` (String)  
-  SHA256 of the created ZIP.
-
-- `zip_size_bytes` (Number)  
-  Output zip size.
-
-- `zip_file_count` (Number)  
-  Files included in the zip.
+| Name | Description |
+|----|----|
+| `file_count` | Number of files included |
+| `zip_size_bytes` | Size of ZIP |
+| `sha256` | ZIP checksum |
