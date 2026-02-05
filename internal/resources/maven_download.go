@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -33,8 +32,7 @@ type MavenDownloadModel struct {
 	Version    types.String `tfsdk:"version"`
 
 	Classifier types.String `tfsdk:"classifier"`
-
-	RepoURL types.String `tfsdk:"repo_url"`
+	RepoURL    types.String `tfsdk:"repo_url"`
 
 	// kind: jar|pom|sources|javadoc|custom
 	Kind      types.String `tfsdk:"kind"`
@@ -48,6 +46,12 @@ type MavenDownloadModel struct {
 
 	FollowRedirects types.Bool  `tfsdk:"follow_redirects"`
 	TimeoutSeconds  types.Int64 `tfsdk:"timeout_seconds"`
+
+	// Refresh behaviour
+	// - "none" (default): do not check disk on refresh
+	// - "missing": if output_path is missing, mark for recreate
+	// - "sha256": if missing OR local sha256 != state sha256, mark for recreate
+	RefreshStrategy types.String `tfsdk:"refresh_strategy"`
 
 	ResolvedURL  types.String `tfsdk:"resolved_url"`
 	SHA256       types.String `tfsdk:"sha256"`
@@ -93,6 +97,8 @@ func (r *MavenDownloadResource) Schema(_ context.Context, _ resource.SchemaReque
 			"follow_redirects": schema.BoolAttribute{Optional: true, Computed: true},
 			"timeout_seconds":  schema.Int64Attribute{Optional: true, Computed: true},
 
+			"refresh_strategy": schema.StringAttribute{Optional: true, Computed: true},
+
 			"resolved_url":  schema.StringAttribute{Computed: true},
 			"sha256":        schema.StringAttribute{Computed: true},
 			"size_bytes":    schema.Int64Attribute{Computed: true},
@@ -102,8 +108,7 @@ func (r *MavenDownloadResource) Schema(_ context.Context, _ resource.SchemaReque
 	}
 }
 
-func (r *MavenDownloadResource) Configure(context.Context, resource.ConfigureRequest, *resource.ConfigureResponse) {
-}
+func (r *MavenDownloadResource) Configure(context.Context, resource.ConfigureRequest, *resource.ConfigureResponse) {}
 
 func (r *MavenDownloadResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan MavenDownloadModel
@@ -111,11 +116,26 @@ func (r *MavenDownloadResource) Create(ctx context.Context, req resource.CreateR
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	applyMavenDefaults(&plan)
 
-	r.downloadAndFillState(ctx, &plan, &resp.Diagnostics)
-	if resp.Diagnostics.HasError() {
+	resolved, err := buildMavenURL(plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Maven coordinates/config", err.Error())
 		return
 	}
+
+	sha, n, et, lm, err := doHTTPDownload(ctx, resolved, plan.OutputPath.ValueString(), plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Download failed", err.Error())
+		return
+	}
+
+	plan.ID = types.StringValue(stableMavenID(plan))
+	plan.ResolvedURL = types.StringValue(resolved)
+	plan.SHA256 = types.StringValue(sha)
+	plan.SizeBytes = types.Int64Value(n)
+	plan.ETag = stringOrNull(et)
+	plan.LastModified = stringOrNull(lm)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -126,12 +146,30 @@ func (r *MavenDownloadResource) Read(ctx context.Context, req resource.ReadReque
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	applyMavenDefaults(&state)
 
-	applyDefaults(&state)
-
-	// If local file is gone, let Terraform recreate.
-	if _, err := os.Stat(state.OutputPath.ValueString()); err != nil {
-		resp.State.RemoveResource(ctx)
+	switch strings.ToLower(strings.TrimSpace(state.RefreshStrategy.ValueString())) {
+	case "none":
+		// no-op
+	case "missing":
+		if _, err := os.Stat(state.OutputPath.ValueString()); err != nil {
+			resp.State.RemoveResource(ctx)
+			return
+		}
+	case "sha256":
+		p := state.OutputPath.ValueString()
+		finfo, err := os.Stat(p)
+		if err != nil || finfo.IsDir() {
+			resp.State.RemoveResource(ctx)
+			return
+		}
+		sha, err := sha256File(p)
+		if err != nil || (!state.SHA256.IsNull() && state.SHA256.ValueString() != "" && sha != state.SHA256.ValueString()) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
+	default:
+		resp.Diagnostics.AddError("Invalid refresh_strategy", `refresh_strategy must be one of: "none", "missing", "sha256"`)
 		return
 	}
 
@@ -150,22 +188,26 @@ func (r *MavenDownloadResource) Update(ctx context.Context, req resource.UpdateR
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	applyMavenDefaults(&plan)
 
-	// Best-effort cleanup if output_path changed
-	var prior MavenDownloadModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &prior)...)
-	if !resp.Diagnostics.HasError() {
-		oldPath := strings.TrimSpace(prior.OutputPath.ValueString())
-		newPath := strings.TrimSpace(plan.OutputPath.ValueString())
-		if oldPath != "" && newPath != "" && oldPath != newPath {
-			_ = os.Remove(oldPath)
-		}
-	}
-
-	r.downloadAndFillState(ctx, &plan, &resp.Diagnostics)
-	if resp.Diagnostics.HasError() {
+	resolved, err := buildMavenURL(plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Maven coordinates/config", err.Error())
 		return
 	}
+
+	sha, n, et, lm, err := doHTTPDownload(ctx, resolved, plan.OutputPath.ValueString(), plan)
+	if err != nil {
+		resp.Diagnostics.AddError("Download failed", err.Error())
+		return
+	}
+
+	plan.ID = types.StringValue(stableMavenID(plan))
+	plan.ResolvedURL = types.StringValue(resolved)
+	plan.SHA256 = types.StringValue(sha)
+	plan.SizeBytes = types.Int64Value(n)
+	plan.ETag = stringOrNull(et)
+	plan.LastModified = stringOrNull(lm)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -181,97 +223,10 @@ func (r *MavenDownloadResource) Delete(ctx context.Context, req resource.DeleteR
 }
 
 func (r *MavenDownloadResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	// Keep it simple: import id into `id` only
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 }
 
-// downloadAndFillState performs the download and fills all computed attributes.
-// It is used by both Create and Update.
-func (r *MavenDownloadResource) downloadAndFillState(ctx context.Context, plan *MavenDownloadModel, diags *diag.Diagnostics) {
-	applyDefaults(plan)
-
-	resolved, err := buildMavenURL(*plan)
-	if err != nil {
-		diags.AddError("Invalid Maven coordinates/config", err.Error())
-		return
-	}
-
-	out := strings.TrimSpace(plan.OutputPath.ValueString())
-	if out == "" {
-		diags.AddError("Invalid output_path", "output_path must be non-empty")
-		return
-	}
-
-	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
-		diags.AddError("Failed to create output directory", err.Error())
-		return
-	}
-
-	client := httpClient(*plan)
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, resolved, nil)
-	if err != nil {
-		diags.AddError("Failed to create HTTP request", err.Error())
-		return
-	}
-	applyAuth(httpReq, *plan)
-
-	httpResp, err := client.Do(httpReq)
-	if err != nil {
-		diags.AddError("Download failed", err.Error())
-		return
-	}
-	defer httpResp.Body.Close()
-
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		diags.AddError("Download failed", fmt.Sprintf("HTTP %d from %s", httpResp.StatusCode, resolved))
-		return
-	}
-
-	tmp := out + ".tmp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		diags.AddError("Failed to create output file", err.Error())
-		return
-	}
-	defer func() { _ = f.Close() }()
-
-	hasher := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, hasher), httpResp.Body)
-	if err != nil {
-		_ = os.Remove(tmp)
-		diags.AddError("Failed writing file", err.Error())
-		return
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		diags.AddError("Failed closing file", err.Error())
-		return
-	}
-	if err := os.Rename(tmp, out); err != nil {
-		_ = os.Remove(tmp)
-		diags.AddError("Failed finalizing file", err.Error())
-		return
-	}
-
-	plan.ID = types.StringValue(stableID(*plan))
-	plan.ResolvedURL = types.StringValue(resolved)
-	plan.SHA256 = types.StringValue(hex.EncodeToString(hasher.Sum(nil)))
-	plan.SizeBytes = types.Int64Value(n)
-
-	if et := httpResp.Header.Get("ETag"); et != "" {
-		plan.ETag = types.StringValue(et)
-	} else {
-		plan.ETag = types.StringNull()
-	}
-	if lm := httpResp.Header.Get("Last-Modified"); lm != "" {
-		plan.LastModified = types.StringValue(lm)
-	} else {
-		plan.LastModified = types.StringNull()
-	}
-}
-
-func applyDefaults(m *MavenDownloadModel) {
+func applyMavenDefaults(m *MavenDownloadModel) {
 	if m.Kind.IsNull() || m.Kind.IsUnknown() || strings.TrimSpace(m.Kind.ValueString()) == "" {
 		m.Kind = types.StringValue("jar")
 	}
@@ -284,13 +239,13 @@ func applyDefaults(m *MavenDownloadModel) {
 	if m.TimeoutSeconds.IsNull() || m.TimeoutSeconds.IsUnknown() || m.TimeoutSeconds.ValueInt64() <= 0 {
 		m.TimeoutSeconds = types.Int64Value(120)
 	}
+	if m.RefreshStrategy.IsNull() || m.RefreshStrategy.IsUnknown() || strings.TrimSpace(m.RefreshStrategy.ValueString()) == "" {
+		m.RefreshStrategy = types.StringValue("none")
+	}
 }
 
 func buildMavenURL(m MavenDownloadModel) (string, error) {
 	repo := strings.TrimSpace(m.RepoURL.ValueString())
-	if repo == "" {
-		repo = "https://repo1.maven.org/maven2/"
-	}
 	if !strings.HasSuffix(repo, "/") {
 		repo += "/"
 	}
@@ -343,7 +298,6 @@ func buildMavenURL(m MavenDownloadModel) (string, error) {
 }
 
 func applyAuth(req *http.Request, m MavenDownloadModel) {
-	// bearer wins
 	if !m.BearerToken.IsNull() && m.BearerToken.ValueString() != "" {
 		req.Header.Set("Authorization", "Bearer "+m.BearerToken.ValueString())
 		return
@@ -365,7 +319,82 @@ func httpClient(m MavenDownloadModel) *http.Client {
 	return c
 }
 
-func stableID(m MavenDownloadModel) string {
+func doHTTPDownload(ctx context.Context, resolvedURL, out string, m MavenDownloadModel) (sha string, size int64, etag, lastModified string, err error) {
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		return "", 0, "", "", err
+	}
+	client := httpClient(m)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, resolvedURL, nil)
+	if err != nil {
+		return "", 0, "", "", err
+	}
+	applyAuth(httpReq, m)
+
+	httpResp, err := client.Do(httpReq)
+	if err != nil {
+		return "", 0, "", "", err
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
+		return "", 0, "", "", fmt.Errorf("HTTP %d from %s", httpResp.StatusCode, resolvedURL)
+	}
+
+	if et := httpResp.Header.Get("ETag"); et != "" {
+		etag = et
+	}
+	if lm := httpResp.Header.Get("Last-Modified"); lm != "" {
+		lastModified = lm
+	}
+
+	tmp := out + ".tmp"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return "", 0, "", "", err
+	}
+	defer func() { _ = f.Close() }()
+
+	hasher := sha256.New()
+	n, err := io.Copy(io.MultiWriter(f, hasher), httpResp.Body)
+	if err != nil {
+		_ = os.Remove(tmp)
+		return "", 0, "", "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return "", 0, "", "", err
+	}
+	if err := os.Rename(tmp, out); err != nil {
+		_ = os.Remove(tmp)
+		return "", 0, "", "", err
+	}
+
+	return hex.EncodeToString(hasher.Sum(nil)), n, etag, lastModified, nil
+}
+
+func sha256File(p string) (string, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func stringOrNull(s string) types.String {
+	if strings.TrimSpace(s) == "" {
+		return types.StringNull()
+	}
+	return types.StringValue(s)
+}
+
+func stableMavenID(m MavenDownloadModel) string {
 	parts := []string{
 		m.RepoURL.ValueString(),
 		m.GroupID.ValueString(),
@@ -375,6 +404,7 @@ func stableID(m MavenDownloadModel) string {
 		m.Kind.ValueString(),
 		m.Extension.ValueString(),
 		m.OutputPath.ValueString(),
+		m.RefreshStrategy.ValueString(),
 	}
 	return strings.Join(parts, "|")
 }

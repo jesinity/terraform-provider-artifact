@@ -1,35 +1,25 @@
 # artifact_zip
 
-Packages a directory into a ZIP archive.
+Creates a ZIP archive from a directory.
 
-This is useful for producing deployment artifacts such as:
-- AWS Lambda bundles
-- Kafka Connect plugins
-- MSK custom plugins
-- Generic uploadable artifacts
+This resource is deterministic when `deterministic = true`:
+- stable file ordering
+- stable timestamps/metadata (implementation-specific)
+- produces repeatable `zip_sha256` outputs in CI pipelines
 
 ## Example
 
 ```hcl
-resource "artifact_zip" "plugin" {
-  input_dir  = "${path.module}/plugin"
-  output_path = "${path.module}/plugin.zip"
+resource "artifact_zip" "bundle" {
+  input_dir   = "${path.module}/data"
+  output_path = "${path.module}/dist/bundle.zip"
+
+  include       = ["**/*"]
+  exclude       = ["**/*.tmp", "bundle.zip"]
+  deterministic = true
+}
+
+output "zip_sha" {
+  value = artifact_zip.bundle.zip_sha256
 }
 ```
-
-## Arguments
-
-| Name | Description |
-|----|----|
-| `input_dir` | Directory to package |
-| `output_path` | Path to resulting ZIP file |
-| `include` | Glob patterns to include |
-| `exclude` | Glob patterns to exclude |
-
-## Attributes
-
-| Name | Description |
-|----|----|
-| `file_count` | Number of files included |
-| `zip_size_bytes` | Size of ZIP |
-| `sha256` | ZIP checksum |

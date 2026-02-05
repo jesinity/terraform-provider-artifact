@@ -1,50 +1,58 @@
 # artifact_maven_download
 
-Downloads an artifact from a Maven-compatible repository **over HTTP**.
+Downloads a Maven artifact to a local `output_path`.
 
-This resource does **not invoke Maven**. It resolves coordinates deterministically
-using standard Maven repository layout rules.
+Defaults:
+- `repo_url` defaults to Maven Central (`https://repo1.maven.org/maven2/`)
+- `kind` defaults to `jar`
+
+## Ephemeral-by-default semantics
+
+- **Create/Update**: downloads the artifact.
+- **Read/Refresh**: by default does *not* check whether the file still exists.
+- **Re-downloads only when inputs change** (coordinates, classifier, kind, etc.).
+
+If you need Terraform to notice missing files (or detect changes), set `refresh_strategy`.
 
 ## Example
 
 ```hcl
 resource "artifact_maven_download" "connector" {
-  group_id    = "org.apache.kafka"
-  artifact_id = "kafka-clients"
-  version     = "3.7.0"
+  group_id    = "io.confluent"
+  artifact_id = "kafka-connect-s3"
+  version     = "11.0.8"
 
-  output_path = "${path.module}/kafka-clients.jar"
+  # optional
+  kind       = "jar"     # jar|pom|sources|javadoc|custom
+  classifier = null      # e.g. "sources"
+  repo_url   = null      # defaults to Maven Central
+  refresh_strategy = "none"
+
+  output_path = "${path.module}/.terraform/artifacts/kafka-connect-s3-11.0.8.jar"
+}
+
+output "jar_sha" {
+  value = artifact_maven_download.connector.sha256
 }
 ```
 
-## Supported Artifacts
-
-- JAR (default)
-- POM
-- Sources JAR
-- Javadoc JAR
-- Custom extensions
-
 ## Arguments
 
-| Name | Description |
-|----|----|
-| `group_id` | Maven groupId |
-| `artifact_id` | Maven artifactId |
-| `version` | Artifact version |
-| `classifier` | Optional classifier |
-| `kind` | `jar`, `pom`, `sources`, `javadoc`, `custom` |
-| `extension` | Required if `kind = custom` |
-| `repo_url` | Repository base URL (default: Maven Central) |
-| `username` | Optional basic auth |
-| `password` | Optional basic auth |
-| `bearer_token` | Optional bearer token |
-| `output_path` | Local file path |
+- `group_id`, `artifact_id`, `version` (required)
+- `output_path` (required)
+- `classifier` (optional)
+- `repo_url` (optional, default Maven Central)
+- `kind` (optional, default `jar`) — `jar|pom|sources|javadoc|custom`
+- `extension` (optional) — required when `kind = "custom"`
+- `username` / `password` (optional) — basic auth
+- `bearer_token` (optional) — bearer auth
+- `follow_redirects` (optional, default `true`)
+- `timeout_seconds` (optional, default `120`)
+- `refresh_strategy` (optional, default `"none"`) — `"none" | "missing" | "sha256"`.
 
 ## Attributes
 
-| Name | Description |
-|----|----|
-| `resolved_url` | Fully resolved Maven URL |
-| `sha256` | Checksum |
-| `etag` | HTTP ETag |
+- `resolved_url`
+- `sha256`
+- `size_bytes`
+- `etag`, `last_modified`
