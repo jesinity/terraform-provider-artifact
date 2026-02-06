@@ -1,46 +1,31 @@
----
-page_title: "artifact Provider"
-description: "Provider for downloading, packaging, and managing build artifacts such as HTTP files, ZIPs, Maven artifacts, and PyPI packages."
----
+# Artifact Provider
 
-# artifact Provider
+This provider offers **small, boring building blocks** for Terraform plans that need an artifact file locally.
 
-The **artifact** provider offers small, focused resources that help automate common
-*artifact pipeline* tasks during Terraform runs.
+The key design choice is **ephemeral local artifacts by default**:
 
-It is intentionally **simple, deterministic, and side-effect–oriented**, designed for:
-- CI/CD pipelines
-- build systems
-- integration environments
-- controlled artifact fetching
+- The provider downloads an artifact during `create` / `update`.
+- On subsequent `terraform plan` / `terraform apply`, the provider **does not check whether the file still exists** (by default).
+- The artifact is **re-downloaded only when resource inputs change** (e.g., URL, Maven coordinates, PyPI package/version, etc.).
 
-This provider **does not attempt to replace package managers** (like Maven, pip, npm).
-Instead, it focuses on **retrieving immutable artifacts over HTTP** and making them
-available as Terraform-managed build inputs.
+This is intentionally closer to “**content-addressed input**” than “declarative file presence”.
+It works well in CI pipelines where the downloaded artifact is *immediately consumed by other resources* (e.g., uploaded to S3, used as a plugin ZIP, etc.) and the workspace is ephemeral.
 
-## Available Resources
+## Refresh behaviour
 
-- **`artifact_download`** – Download a generic HTTP/HTTPS artifact
-- **`artifact_zip`** – Package a directory into a ZIP archive
-- **`artifact_maven_download`** – Download artifacts from Maven repositories
-- **`artifact_pypi_download`** – Download Python packages from PyPI-compatible indexes
+All download resources support `refresh_strategy`:
 
-## Common Use Cases
+- `"none"` (default): do not touch disk on refresh. Terraform will *not* force a re-download just because a file vanished.
+- `"missing"`: if `output_path` is missing on refresh, Terraform will mark the resource for recreation (and re-download on apply).
+- `"sha256"`: if missing OR the local file’s sha256 differs from the stored sha256, Terraform will mark for recreation.
 
-- Fetch Kafka Connect plugins
-- Download vendor SDKs or CLIs
-- Materialize build-time dependencies
-- Package files for cloud services (Lambda, MSK, Glue, etc.)
+This lets you decide how “declarative” you want local artifacts to be.
 
-## Provider Configuration
+## Resources
 
-```hcl
-terraform {
-  required_providers {
-    artifact = {
-      source  = "jesinity/artifact"
-      version = ">= 0.1.0"
-    }
-  }
-}
-```
+- `artifact_download` — HTTP/HTTPS download to `output_path`.
+- `artifact_maven_download` — Maven artifact download (Maven Central by default).
+- `artifact_pypi_download` — PyPI artifact download (public PyPI by default).
+- `artifact_zip` — Create deterministic ZIP files.
+
+See each resource page for attributes and examples.
