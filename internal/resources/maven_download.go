@@ -373,27 +373,6 @@ func doHTTPDownload(ctx context.Context, resolvedURL, out string, m MavenDownloa
 	return hex.EncodeToString(hasher.Sum(nil)), n, etag, lastModified, nil
 }
 
-func sha256File(p string) (string, error) {
-	f, err := os.Open(p)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-func stringOrNull(s string) types.String {
-	if strings.TrimSpace(s) == "" {
-		return types.StringNull()
-	}
-	return types.StringValue(s)
-}
-
 func stableMavenID(m MavenDownloadModel) string {
 	parts := []string{
 		m.RepoURL.ValueString(),

@@ -140,7 +140,7 @@ func (r *ZipResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 		return
 	}
 
-	sha, err := fileSHA256(p)
+	sha, err := sha256File(p)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to hash zip", err.Error())
 		return
