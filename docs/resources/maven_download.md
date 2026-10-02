@@ -47,7 +47,7 @@ output "jar_sha" {
 - `username` / `password` (optional) — basic auth
 - `bearer_token` (optional) — bearer auth
 - `follow_redirects` (optional, default `true`)
-- `timeout_seconds` (optional, default `120`)
+- `timeout_seconds` (optional, default `120`) — integer from `1` through `9223372036`
 - `refresh_strategy` (optional, default `"none"`) — `"none" | "missing" | "sha256"`.
 
 ## Attributes

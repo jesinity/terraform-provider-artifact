@@ -68,13 +68,10 @@ func (r *DownloadResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 			"password":     schema.StringAttribute{Optional: true, Sensitive: true},
 			"bearer_token": schema.StringAttribute{Optional: true, Sensitive: true},
 
-			"follow_redirects": schema.BoolAttribute{Optional: true, Computed: true},
-			"timeout_seconds":  schema.Int64Attribute{Optional: true, Computed: true},
+			"follow_redirects": followRedirectsAttribute(),
+			"timeout_seconds":  timeoutSecondsAttribute(),
 
-			"refresh_strategy": schema.StringAttribute{
-				Optional: true,
-				Computed: true,
-			},
+			"refresh_strategy": refreshStrategyAttribute(),
 
 			"resolved_url":        schema.StringAttribute{Computed: true},
 			"download_sha256":     schema.StringAttribute{Computed: true},
@@ -86,7 +83,8 @@ func (r *DownloadResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 	}
 }
 
-func (r *DownloadResource) Configure(context.Context, resource.ConfigureRequest, *resource.ConfigureResponse) {}
+func (r *DownloadResource) Configure(context.Context, resource.ConfigureRequest, *resource.ConfigureResponse) {
+}
 
 func (r *DownloadResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan DownloadModel
@@ -223,10 +221,10 @@ func applyDownloadDefaults(m *DownloadModel) {
 	if m.FollowRedirects.IsNull() || m.FollowRedirects.IsUnknown() {
 		m.FollowRedirects = types.BoolValue(true)
 	}
-	if m.TimeoutSeconds.IsNull() || m.TimeoutSeconds.IsUnknown() || m.TimeoutSeconds.ValueInt64() <= 0 {
+	if m.TimeoutSeconds.IsNull() || m.TimeoutSeconds.IsUnknown() {
 		m.TimeoutSeconds = types.Int64Value(120)
 	}
-	if m.RefreshStrategy.IsNull() || m.RefreshStrategy.IsUnknown() || strings.TrimSpace(m.RefreshStrategy.ValueString()) == "" {
+	if m.RefreshStrategy.IsNull() || m.RefreshStrategy.IsUnknown() {
 		m.RefreshStrategy = types.StringValue("none")
 	}
 }

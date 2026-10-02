@@ -17,9 +17,18 @@ resource "artifact_zip" "bundle" {
   include       = ["**/*"]
   exclude       = ["**/*.tmp", "bundle.zip"]
   deterministic = true
+
+  # Optional: change triggers that force replacement.
+  extra_triggers = {
+    upstream_sha = artifact_download.s3_sink_zip.download_sha256
+  }
 }
 
 output "zip_sha" {
   value = artifact_zip.bundle.zip_sha256
 }
 ```
+
+The output archive and its `.tmp` file are automatically excluded from the input
+files, even when `output_path` is inside `input_dir`. You do not need an explicit
+exclude pattern for the archive itself.

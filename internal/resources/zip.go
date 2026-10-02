@@ -17,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -35,6 +36,7 @@ type ZipModel struct {
 	Include       types.List   `tfsdk:"include"` // list(string)
 	Exclude       types.List   `tfsdk:"exclude"` // list(string)
 	Deterministic types.Bool   `tfsdk:"deterministic"`
+	ExtraTriggers types.Map    `tfsdk:"extra_triggers"` // map(string) to force updates
 
 	ZipSHA256 types.String `tfsdk:"zip_sha256"`
 	FileCount types.Int64  `tfsdk:"file_count"`
@@ -79,6 +81,14 @@ func (r *ZipResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 				Optional: true,
 				Computed: true,
 				Default:  booldefault.StaticBool(true),
+			},
+
+			"extra_triggers": schema.MapAttribute{
+				Optional:    true,
+				ElementType: types.StringType,
+				PlanModifiers: []planmodifier.Map{
+					mapplanmodifier.RequiresReplaceIfConfigured(),
+				},
 			},
 
 			"zip_sha256": schema.StringAttribute{
@@ -216,22 +226,49 @@ func buildZip(inputDir, outputPath string, include, exclude []string, determinis
 	if !inInfo.IsDir() {
 		return "", 0, 0, fmt.Errorf("input_dir is not a directory: %s", inputDir)
 	}
+	// Resolve directory aliases so an output path reached through a symlink
+	// is still recognized as the same file encountered while walking input.
+	inputDir, err = filepath.Abs(inputDir)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("absolute input_dir: %w", err)
+	}
+	inputDir, err = filepath.EvalSymlinks(inputDir)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("resolve input_dir: %w", err)
+	}
 
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
 		return "", 0, 0, fmt.Errorf("mkdir: %w", err)
 	}
+	outputDir, err := filepath.EvalSymlinks(filepath.Dir(outputPath))
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("resolve output directory: %w", err)
+	}
+	outputPath, err = filepath.Abs(filepath.Join(outputDir, filepath.Base(outputPath)))
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("absolute output_path: %w", err)
+	}
+	tmp := outputPath + ".tmp"
 
 	entries, err := collectEntries(inputDir, include, exclude)
 	if err != nil {
 		return "", 0, 0, err
 	}
+	// Never archive the previous output or a temporary file left by an
+	// interrupted build, even when include patterns explicitly match them.
+	filtered := entries[:0]
+	for _, entry := range entries {
+		if entry.absPath != outputPath && entry.absPath != tmp {
+			filtered = append(filtered, entry)
+		}
+	}
+	entries = filtered
 
 	// Deterministic ordering
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].relPath < entries[j].relPath
 	})
 
-	tmp := outputPath + ".tmp"
 	_ = os.Remove(tmp)
 
 	f, err := os.Create(tmp)

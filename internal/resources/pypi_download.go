@@ -17,6 +17,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -43,6 +45,8 @@ type PyPIDownloadModel struct {
 	// Optional auth (useful for private indexes that protect the JSON endpoint and/or the artifact itself)
 	Username types.String `tfsdk:"username"`
 	Password types.String `tfsdk:"password"`
+	// Additional origins explicitly authorized to receive these credentials.
+	TrustedAuthOrigins types.Set `tfsdk:"trusted_auth_origins"`
 
 	FollowRedirects types.Bool  `tfsdk:"follow_redirects"`
 	TimeoutSeconds  types.Int64 `tfsdk:"timeout_seconds"`
@@ -75,18 +79,24 @@ func (r *PyPIDownloadResource) Schema(_ context.Context, _ resource.SchemaReques
 			"package": schema.StringAttribute{Required: true},
 			"version": schema.StringAttribute{Required: true},
 
-			"artifact_type": schema.StringAttribute{Optional: true, Computed: true},
+			"artifact_type": schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("wheel"), Validators: []validator.String{stringChoiceValidator{"wheel", "sdist"}}},
 			"filename":      schema.StringAttribute{Optional: true},
 
-			"index_url": schema.StringAttribute{Optional: true, Computed: true},
+			"index_url": schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("https://pypi.org")},
 
 			"username": schema.StringAttribute{Optional: true},
 			"password": schema.StringAttribute{Optional: true, Sensitive: true},
+			"trusted_auth_origins": schema.SetAttribute{
+				Optional:    true,
+				ElementType: types.StringType,
+				Description: "Additional HTTP(S) origins allowed to receive the index username/password, including on redirects. Each origin must contain only a scheme, host, and optional port.",
+				Validators:  []validator.Set{trustedAuthOriginsValidator{}},
+			},
 
-			"follow_redirects": schema.BoolAttribute{Optional: true, Computed: true},
-			"timeout_seconds":  schema.Int64Attribute{Optional: true, Computed: true},
+			"follow_redirects": followRedirectsAttribute(),
+			"timeout_seconds":  timeoutSecondsAttribute(),
 
-			"refresh_strategy": schema.StringAttribute{Optional: true, Computed: true},
+			"refresh_strategy": refreshStrategyAttribute(),
 
 			"output_path": schema.StringAttribute{Required: true},
 
@@ -99,7 +109,8 @@ func (r *PyPIDownloadResource) Schema(_ context.Context, _ resource.SchemaReques
 	}
 }
 
-func (r *PyPIDownloadResource) Configure(context.Context, resource.ConfigureRequest, *resource.ConfigureResponse) {}
+func (r *PyPIDownloadResource) Configure(context.Context, resource.ConfigureRequest, *resource.ConfigureResponse) {
+}
 
 func (r *PyPIDownloadResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan PyPIDownloadModel
@@ -217,19 +228,19 @@ func (r *PyPIDownloadResource) ImportState(ctx context.Context, req resource.Imp
 }
 
 func applyPyPIDefaults(m *PyPIDownloadModel) {
-	if m.IndexURL.IsNull() || m.IndexURL.IsUnknown() || strings.TrimSpace(m.IndexURL.ValueString()) == "" {
+	if m.IndexURL.IsNull() || m.IndexURL.IsUnknown() {
 		m.IndexURL = types.StringValue("https://pypi.org")
 	}
-	if m.ArtifactType.IsNull() || m.ArtifactType.IsUnknown() || strings.TrimSpace(m.ArtifactType.ValueString()) == "" {
+	if m.ArtifactType.IsNull() || m.ArtifactType.IsUnknown() {
 		m.ArtifactType = types.StringValue("wheel")
 	}
 	if m.FollowRedirects.IsNull() || m.FollowRedirects.IsUnknown() {
 		m.FollowRedirects = types.BoolValue(true)
 	}
-	if m.TimeoutSeconds.IsNull() || m.TimeoutSeconds.IsUnknown() || m.TimeoutSeconds.ValueInt64() <= 0 {
+	if m.TimeoutSeconds.IsNull() || m.TimeoutSeconds.IsUnknown() {
 		m.TimeoutSeconds = types.Int64Value(120)
 	}
-	if m.RefreshStrategy.IsNull() || m.RefreshStrategy.IsUnknown() || strings.TrimSpace(m.RefreshStrategy.ValueString()) == "" {
+	if m.RefreshStrategy.IsNull() || m.RefreshStrategy.IsUnknown() {
 		m.RefreshStrategy = types.StringValue("none")
 	}
 }
@@ -237,13 +248,26 @@ func applyPyPIDefaults(m *PyPIDownloadModel) {
 func pypiHTTPClient(m PyPIDownloadModel) *http.Client {
 	timeout := time.Duration(m.TimeoutSeconds.ValueInt64()) * time.Second
 	c := &http.Client{Timeout: timeout}
-	if !m.FollowRedirects.ValueBool() {
-		c.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	c.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if !m.FollowRedirects.ValueBool() {
+			return http.ErrUseLastResponse
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		// net/http may copy Authorization from the initial request. Recheck
+		// the exact origin on every hop, including scheme and port changes.
+		applyBasicAuth(req, m)
+		return nil
 	}
 	return c
 }
 
 func applyBasicAuth(req *http.Request, m PyPIDownloadModel) {
+	req.Header.Del("Authorization")
+	if !pypiAuthOriginAllowed(req.URL, m) {
+		return
+	}
 	if !m.Username.IsNull() && m.Username.ValueString() != "" &&
 		!m.Password.IsNull() && m.Password.ValueString() != "" {
 		req.SetBasicAuth(m.Username.ValueString(), m.Password.ValueString())
