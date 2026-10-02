@@ -68,9 +68,10 @@ resource "artifact_pypi_download" "internal_pkg" {
 - `artifact_type` (optional, default `"wheel"`) — `"wheel" | "sdist"`
 - `filename` (optional) — exact match selector when multiple artifacts exist
 - `index_url` (optional, default `https://pypi.org`)
-- `username` / `password` (optional) — basic auth for metadata + artifact
+- `username` / `password` (optional) — basic auth for requests to the index origin and explicitly trusted origins
+- `trusted_auth_origins` (optional, set of strings) — additional origins allowed to receive these credentials
 - `follow_redirects` (optional, default `true`)
-- `timeout_seconds` (optional, default `120`)
+- `timeout_seconds` (optional, default `120`) — integer from `1` through `9223372036`
 - `refresh_strategy` (optional, default `"none"`) — `"none" | "missing" | "sha256"`.
 
 ## Attributes
@@ -79,3 +80,33 @@ resource "artifact_pypi_download" "internal_pkg" {
 - `sha256`
 - `size_bytes`
 - `etag`, `last_modified`
+
+
+## Credential scope
+
+The provider sends the configured username/password only to the `index_url`
+origin. An origin includes the scheme, hostname, and effective port. This rule
+also applies to redirects: a different port, subdomain, or HTTPS-to-HTTP redirect
+does not receive credentials automatically. A public artifact on another origin
+can still be downloaded without authentication.
+
+If an additional artifact server requires the same credentials, authorize its
+exact origin explicitly:
+
+```hcl
+resource "artifact_pypi_download" "internal_pkg" {
+  index_url   = "https://pypi.example.com"
+  package     = "my-internal-lib"
+  version     = "1.2.3"
+  username    = var.pypi_user
+  password    = var.pypi_pass
+  output_path = "${path.module}/.terraform/artifacts/internal.whl"
+
+  trusted_auth_origins = ["https://packages.example.com:8443"]
+}
+```
+
+Entries must be HTTP(S) origins without credentials, paths, queries, fragments,
+or wildcard hosts. The index origin is always trusted and need not be repeated.
+Existing configurations that authenticate to a separate artifact origin must
+add that origin to `trusted_auth_origins`.

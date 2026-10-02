@@ -72,14 +72,13 @@ You choose the trade-off.
 
 ------------------------------------------------------------------------
 
-### 1️⃣ `refresh_mode = "none"` (default)
+### 1️⃣ `refresh_strategy = "none"` (default)
 
 #### Behavior
 
--   The artifact is downloaded **only once**, when the resource is first
-    created.
+-   The artifact is downloaded when the resource is created or its inputs change.
 -   Terraform will **not** re-download the artifact on subsequent
-    applies.
+    applies with unchanged inputs.
 -   The file is treated as ephemeral local state.
 
 #### When to use
@@ -98,24 +97,25 @@ You choose the trade-off.
 resource "artifact_download" "plugin" {
   url          = "https://example.com/plugin.zip"
   output_path  = "${path.module}/.terraform/plugin.zip"
-  refresh_mode = "none"
+  refresh_strategy = "none"
 }
 ```
 
 ------------------------------------------------------------------------
 
-### 2️⃣ `refresh_mode = "sha256"`
+### 2️⃣ `refresh_strategy = "sha256"`
 
 #### Behavior
 
--   Terraform re-downloads the artifact only if the content changes.
+-   Terraform recreates the artifact if the local file is missing or its
+    SHA-256 differs from the checksum recorded in state.
 -   The provider computes the SHA256 from the downloaded bytes.
 -   Downstream resources (e.g., `aws_s3_object`) can react using
     `source_hash`.
 
 #### When to use
 
--   When artifact content changes but URL stays the same
+-   When local artifact files may be deleted or modified between applies
 -   When the artifact is uploaded to S3, Lambda, MSK Connect, etc.
 -   When you want idempotent behavior across applies
 
@@ -131,23 +131,24 @@ Typical pattern:
 resource "artifact_download" "plugin" {
   url          = "https://example.com/plugin.zip"
   output_path  = "${path.module}/.terraform/plugin.zip"
-  refresh_mode = "sha256"
+  refresh_strategy = "sha256"
 }
 
 resource "aws_s3_object" "plugin" {
   bucket      = "my-bucket"
   key         = "plugins/plugin.zip"
   source      = artifact_download.plugin.output_path
-  source_hash = artifact_download.plugin.sha256
+  source_hash = artifact_download.plugin.download_sha256
 }
 ```
 
-This guarantees: - No unnecessary uploads - Automatic updates when
-content changes
+Downstream resources can react when a new download produces a different checksum.
+Changes to the remote artifact alone are not detected; use changed resource inputs
+or an explicit Terraform replacement to download it again.
 
 ------------------------------------------------------------------------
 
-## 3️⃣ `refresh_mode = "missing"`
+## 3️⃣ `refresh_strategy = "missing"`
 
 ### Behavior
 
@@ -165,7 +166,7 @@ content changes
 resource "artifact_download" "debug" {
   url          = "https://example.com/latest.zip"
   output_path  = "${path.module}/.terraform/latest.zip"
-  refresh_mode = "missing"
+  refresh_strategy = "missing"
 }
 ```
 
@@ -176,7 +177,7 @@ resource "artifact_download" "debug" {
 | Mode     | Re-downloads                                  |  Terraform state changes                | Recommended                  |
 |----------|-----------------------------------------------|-----------------------------------------|------------------------------|
 | `none`   | Only when configuration changes               |  Only when configuration changes        | Default                      |
-| `sha256` | When content hash differs (implies download)  |  When SHA changes (content changes)     | Best for mutable URLs        |
+| `sha256` | If missing or the local hash differs from state | Resource is recreated | Detect local file drift |
 | `missing`| Only if output file is missing                |  When file does not exist anymore       | Artifact in/visible in code  |
 
 ### Design Rationale
@@ -222,7 +223,7 @@ resource "artifact_download" "plugin" {
 }
 
 output "sha" {
-  value = artifact_download.plugin.sha256
+  value = artifact_download.plugin.download_sha256
 }
 ```
 
@@ -356,3 +357,36 @@ provider_installation {
 ## License
 
 MIT
+
+
+## Development and tests
+
+Run the unit, resource callback, and provider schema tests:
+
+```sh
+go test -race -cover ./...
+```
+
+Run the Terraform CLI acceptance tests (Terraform must be installed):
+
+```sh
+TF_ACC=1 TF_ACC_TERRAFORM_PATH="$(command -v terraform)" go test -race ./internal/provider -run TestAcc -count=1 -timeout=15m
+```
+
+Acceptance tests use local HTTP fixtures and temporary directories. They cover
+creation, unchanged plans, updates, missing-file recreation, checksum drift,
+ZIP trigger replacement, invalid configuration, and destruction. They do not
+require cloud credentials or download artifacts from public registries.
+
+GitHub Actions runs the tests and `go vet` on branch pushes and pull requests.
+Acceptance tests run against Terraform 1.5.7 and 1.16.4. When a `v*` tag is pushed,
+the release workflow calls the same test workflow for that tagged commit.
+GoReleaser publishes only after all test jobs pass.
+
+Download defaults are applied during planning. `timeout_seconds` must be a
+positive integer no greater than 9223372036; `refresh_strategy` must be `none`,
+`missing`, or `sha256`. Invalid values are rejected before a download starts.
+
+For private PyPI indexes, credentials are sent only to the index origin by
+default, including across redirects. Authorize other artifact servers explicitly
+with `trusted_auth_origins`; see [the PyPI resource documentation](docs/resources/pypi_download.md).

@@ -16,6 +16,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -77,12 +79,15 @@ func (r *MavenDownloadResource) Schema(_ context.Context, _ resource.SchemaReque
 
 			"repo_url": schema.StringAttribute{
 				Optional: true,
-				Computed: true, // default to Maven Central
+				Computed: true,
+				Default:  stringdefault.StaticString("https://repo1.maven.org/maven2/"),
 			},
 
 			"kind": schema.StringAttribute{
-				Optional: true,
-				Computed: true, // default "jar"
+				Optional:   true,
+				Computed:   true,
+				Default:    stringdefault.StaticString("jar"),
+				Validators: []validator.String{stringChoiceValidator{"jar", "pom", "sources", "javadoc", "custom"}},
 			},
 			"extension": schema.StringAttribute{
 				Optional: true,
@@ -94,10 +99,10 @@ func (r *MavenDownloadResource) Schema(_ context.Context, _ resource.SchemaReque
 			"password":     schema.StringAttribute{Optional: true, Sensitive: true},
 			"bearer_token": schema.StringAttribute{Optional: true, Sensitive: true},
 
-			"follow_redirects": schema.BoolAttribute{Optional: true, Computed: true},
-			"timeout_seconds":  schema.Int64Attribute{Optional: true, Computed: true},
+			"follow_redirects": followRedirectsAttribute(),
+			"timeout_seconds":  timeoutSecondsAttribute(),
 
-			"refresh_strategy": schema.StringAttribute{Optional: true, Computed: true},
+			"refresh_strategy": refreshStrategyAttribute(),
 
 			"resolved_url":  schema.StringAttribute{Computed: true},
 			"sha256":        schema.StringAttribute{Computed: true},
@@ -108,7 +113,8 @@ func (r *MavenDownloadResource) Schema(_ context.Context, _ resource.SchemaReque
 	}
 }
 
-func (r *MavenDownloadResource) Configure(context.Context, resource.ConfigureRequest, *resource.ConfigureResponse) {}
+func (r *MavenDownloadResource) Configure(context.Context, resource.ConfigureRequest, *resource.ConfigureResponse) {
+}
 
 func (r *MavenDownloadResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan MavenDownloadModel
@@ -227,19 +233,19 @@ func (r *MavenDownloadResource) ImportState(ctx context.Context, req resource.Im
 }
 
 func applyMavenDefaults(m *MavenDownloadModel) {
-	if m.Kind.IsNull() || m.Kind.IsUnknown() || strings.TrimSpace(m.Kind.ValueString()) == "" {
+	if m.Kind.IsNull() || m.Kind.IsUnknown() {
 		m.Kind = types.StringValue("jar")
 	}
-	if m.RepoURL.IsNull() || m.RepoURL.IsUnknown() || strings.TrimSpace(m.RepoURL.ValueString()) == "" {
+	if m.RepoURL.IsNull() || m.RepoURL.IsUnknown() {
 		m.RepoURL = types.StringValue("https://repo1.maven.org/maven2/")
 	}
 	if m.FollowRedirects.IsNull() || m.FollowRedirects.IsUnknown() {
 		m.FollowRedirects = types.BoolValue(true)
 	}
-	if m.TimeoutSeconds.IsNull() || m.TimeoutSeconds.IsUnknown() || m.TimeoutSeconds.ValueInt64() <= 0 {
+	if m.TimeoutSeconds.IsNull() || m.TimeoutSeconds.IsUnknown() {
 		m.TimeoutSeconds = types.Int64Value(120)
 	}
-	if m.RefreshStrategy.IsNull() || m.RefreshStrategy.IsUnknown() || strings.TrimSpace(m.RefreshStrategy.ValueString()) == "" {
+	if m.RefreshStrategy.IsNull() || m.RefreshStrategy.IsUnknown() {
 		m.RefreshStrategy = types.StringValue("none")
 	}
 }
