@@ -388,17 +388,17 @@ func doPyPIDownload(ctx context.Context, resolvedURL, out string, m PyPIDownload
 	if err != nil {
 		return "", 0, "", "", err
 	}
-	defer func() { _ = f.Close() }()
 
 	hasher := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, hasher), resp.Body)
-	if err != nil {
+	n, copyErr := io.Copy(io.MultiWriter(f, hasher), resp.Body)
+	closeErr := f.Close()
+	if copyErr != nil {
 		_ = os.Remove(tmp)
-		return "", 0, "", "", err
+		return "", 0, "", "", copyErr
 	}
-	if err := f.Close(); err != nil {
+	if closeErr != nil {
 		_ = os.Remove(tmp)
-		return "", 0, "", "", err
+		return "", 0, "", "", closeErr
 	}
 	if err := os.Rename(tmp, out); err != nil {
 		_ = os.Remove(tmp)

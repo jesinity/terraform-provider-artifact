@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -145,6 +146,9 @@ func TestBuildZipExcludesOutputAndStaleTemporaryFile(t *testing.T) {
 			if alias {
 				link := filepath.Join(root, "alias")
 				if err := os.Symlink(input, link); err != nil {
+					if runtime.GOOS == "windows" {
+						t.Skipf("creating symlinks requires Windows developer mode or additional privileges: %v", err)
+					}
 					t.Fatal(err)
 				}
 				input = link
