@@ -379,9 +379,12 @@ ZIP trigger replacement, invalid configuration, and destruction. They do not
 require cloud credentials or download artifacts from public registries.
 
 GitHub Actions runs the tests and `go vet` on branch pushes and pull requests.
-Acceptance tests run against Terraform 1.5.7 and 1.16.4. When a `v*` tag is pushed,
+The checks run on Linux and Windows, with acceptance tests against Terraform
+1.5.7 and 1.16.4 on both systems. Windows CI also compiles the ARM64 binary.
+When a `v*` tag is pushed,
 the release workflow calls the same test workflow for that tagged commit.
 GoReleaser publishes only after all test jobs pass.
+Release archives cover Linux, macOS, and Windows on amd64 and arm64.
 
 Download defaults are applied during planning. `timeout_seconds` must be a
 positive integer no greater than 9223372036; `refresh_strategy` must be `none`,

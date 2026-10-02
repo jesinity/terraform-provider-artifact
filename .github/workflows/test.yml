@@ -12,7 +12,10 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -23,12 +26,21 @@ jobs:
         run: go test -race -cover ./...
       - name: Static checks
         run: go vet ./...
+      - name: Compile Windows ARM64 provider
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:GOOS = 'windows'
+          $env:GOARCH = 'arm64'
+          $env:CGO_ENABLED = '0'
+          go build -o (Join-Path $env:RUNNER_TEMP 'terraform-provider-artifact_arm64.exe') .
 
   acceptance:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       matrix:
+        os: [ubuntu-latest, windows-latest]
         terraform: ["1.5.7", "1.16.4"]
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +52,17 @@ jobs:
         with:
           terraform_version: ${{ matrix.terraform }}
           terraform_wrapper: false
-      - name: Terraform acceptance tests
+      - name: Terraform acceptance tests (Unix)
+        if: runner.os != 'Windows'
         env:
           TF_ACC: "1"
         run: TF_ACC_TERRAFORM_PATH="$(command -v terraform)" go test -race ./internal/provider -run TestAcc -count=1 -timeout=15m
+      - name: Terraform acceptance tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TF_ACC: "1"
+        run: |
+          $env:TF_ACC_TERRAFORM_PATH = (Get-Command terraform).Source
+          go test -race ./internal/provider -run TestAcc -count=1 -timeout=15m
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
