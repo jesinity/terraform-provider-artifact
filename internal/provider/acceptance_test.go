@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -191,6 +192,75 @@ resource "artifact_zip" "test" {
 			},
 			{Config: config3, Check: check(1), ConfigPlanChecks: expectAction("artifact_zip.test", plancheck.ResourceActionReplace)},
 			{Config: config3, PlanOnly: true},
+		},
+	})
+}
+
+func TestAccZipRebuildOnRead(t *testing.T) {
+	requireAcceptance(t)
+	input := t.TempDir()
+	source := filepath.Join(input, "source.txt")
+	if err := os.WriteFile(source, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), ".terraform", "bundle.zip")
+	config := acceptanceProviderConfig + fmt.Sprintf(`
+resource "artifact_zip" "test" {
+  input_dir = %q
+  output_path = %q
+  rebuild_on_read = true
+}
+`, input, out)
+	checkArchive := func(want string) resource.TestCheckFunc {
+		return func(_ *terraform.State) error {
+			archive, err := zip.OpenReader(out)
+			if err != nil {
+				return err
+			}
+			defer archive.Close()
+			if len(archive.File) != 1 || archive.File[0].Name != "source.txt" {
+				return fmt.Errorf("unexpected ZIP entries: %v", archive.File)
+			}
+			r, err := archive.File[0].Open()
+			if err != nil {
+				return err
+			}
+			defer r.Close()
+			body, err := io.ReadAll(r)
+			if err != nil {
+				return err
+			}
+			if string(body) != want {
+				return fmt.Errorf("ZIP content = %q, want %q", body, want)
+			}
+			return nil
+		}
+	}
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: acceptanceFactories(),
+		CheckDestroy:             checkFileRemoved(out),
+		Steps: []resource.TestStep{
+			{Config: config, Check: checkArchive("original")},
+			{Config: config, ConfigPlanChecks: expectAction("artifact_zip.test", plancheck.ResourceActionNoop)},
+			{
+				PreConfig: func() {
+					if err := os.Remove(out); err != nil {
+						t.Fatal(err)
+					}
+				},
+				Config: config, Check: checkArchive("original"),
+				ConfigPlanChecks: expectAction("artifact_zip.test", plancheck.ResourceActionNoop),
+			},
+			{Config: config, Check: checkArchive("original")},
+			{
+				PreConfig: func() {
+					if err := os.WriteFile(source, []byte("modified"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				},
+				Config: config, Check: checkArchive("modified"),
+				ConfigPlanChecks: expectAction("artifact_zip.test", plancheck.ResourceActionCreate),
+			},
 		},
 	})
 }

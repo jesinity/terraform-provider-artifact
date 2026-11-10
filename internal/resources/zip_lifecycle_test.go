@@ -3,6 +3,8 @@ package resources
 import (
 	"archive/zip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"os"
 	"path/filepath"
@@ -70,6 +72,110 @@ func TestZipReadRemovesMissingArchive(t *testing.T) {
 	}
 }
 
+func TestZipReadRebuildOnRead(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	input := t.TempDir()
+	source := filepath.Join(input, "source.txt")
+	writeFile(t, source, "original")
+	out := filepath.Join(t.TempDir(), ".terraform", "bundle.zip")
+	r := NewZipResource()
+	model := zipTestModel(input, out)
+	model.RebuildOnRead = types.BoolValue(true)
+	plan := modelState(t, r, model)
+	created := resource.CreateResponse{State: plan}
+	r.Create(ctx, resource.CreateRequest{Plan: planFromState(plan)}, &created)
+	requireNoErrors(t, created.Diagnostics)
+	assertZipState(t, created.State, out, map[string]string{"source.txt": "original"})
+	original, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(state tfsdk.State) resource.ReadResponse {
+		resp := resource.ReadResponse{State: state}
+		r.Read(ctx, resource.ReadRequest{State: state}, &resp)
+		return resp
+	}
+
+	// A present, unchanged archive has no state diff.
+	unchanged := read(created.State)
+	requireNoErrors(t, unchanged.Diagnostics)
+	if !unchanged.State.Raw.Equal(created.State.Raw) {
+		t.Fatal("unchanged archive changed state")
+	}
+
+	// A fresh CI checkout can restore the missing file during refresh.
+	if err := os.Remove(out); err != nil {
+		t.Fatal(err)
+	}
+	restored := read(unchanged.State)
+	requireNoErrors(t, restored.Diagnostics)
+	if !restored.State.Raw.Equal(created.State.Raw) {
+		t.Fatal("identical rebuilt archive changed state")
+	}
+	rebuilt, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rebuilt) != string(original) {
+		t.Fatal("rebuilt archive bytes differ")
+	}
+	assertZipState(t, restored.State, out, map[string]string{"source.txt": "original"})
+	writeFile(t, out, "damaged archive")
+	repaired := read(restored.State)
+	requireNoErrors(t, repaired.Diagnostics)
+	if !repaired.State.Raw.Equal(created.State.Raw) {
+		t.Fatal("repairing a damaged local ZIP changed state")
+	}
+	assertZipState(t, repaired.State, out, map[string]string{"source.txt": "original"})
+
+	// A modified source must leave a real plan, even if the old ZIP existed.
+	writeFile(t, source, "modified")
+	changed := read(repaired.State)
+	requireNoErrors(t, changed.Diagnostics)
+	if !changed.State.Raw.IsNull() {
+		t.Fatal("source change did not remove the old resource from state")
+	}
+	changedBytes, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(changedBytes) == string(original) {
+		t.Fatal("source change did not rebuild the archive")
+	}
+	changedSHA := sha256.Sum256(changedBytes)
+	originalSHA := sha256.Sum256(original)
+	if hex.EncodeToString(changedSHA[:]) == hex.EncodeToString(originalSHA[:]) {
+		t.Fatal("source change produced the original hash")
+	}
+}
+
+func TestZipReadRebuildErrorRetainsState(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	input := t.TempDir()
+	writeFile(t, filepath.Join(input, "source.txt"), "content")
+	out := filepath.Join(t.TempDir(), "bundle.zip")
+	r := NewZipResource()
+	model := zipTestModel(input, out)
+	model.RebuildOnRead = types.BoolValue(true)
+	plan := modelState(t, r, model)
+	created := resource.CreateResponse{State: plan}
+	r.Create(ctx, resource.CreateRequest{Plan: planFromState(plan)}, &created)
+	requireNoErrors(t, created.Diagnostics)
+	if err := os.RemoveAll(input); err != nil {
+		t.Fatal(err)
+	}
+	read := resource.ReadResponse{State: created.State}
+	r.Read(ctx, resource.ReadRequest{State: created.State}, &read)
+	if !read.Diagnostics.HasError() {
+		t.Fatal("missing input_dir did not report a rebuild error")
+	}
+	if !read.State.Raw.Equal(created.State.Raw) {
+		t.Fatal("failed rebuild changed state")
+	}
+}
+
 func TestZipExtraTriggersReplacement(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -133,6 +239,7 @@ func zipTestModel(input, out string) ZipModel {
 		InputDir: types.StringValue(input), OutputPath: types.StringValue(out),
 		Include: types.ListNull(types.StringType), Exclude: types.ListNull(types.StringType),
 		ExtraTriggers: types.MapNull(types.StringType), Deterministic: types.BoolValue(true),
+		RebuildOnRead: types.BoolNull(),
 	}
 }
 
@@ -143,6 +250,12 @@ func assertZipState(t *testing.T, state tfsdk.State, out string, want map[string
 		t.Fatal(err)
 	}
 	assertArtifactState(t, state, "zip_sha256", "file_size", out, string(data))
+	var id, hash types.String
+	requireNoErrors(t, state.GetAttribute(context.Background(), path.Root("id"), &id))
+	requireNoErrors(t, state.GetAttribute(context.Background(), path.Root("zip_sha256"), &hash))
+	if id.ValueString() != zipID(out, hash.ValueString()) {
+		t.Errorf("id %q is inconsistent with zip_sha256 %q", id.ValueString(), hash.ValueString())
+	}
 	var count types.Int64
 	requireNoErrors(t, state.GetAttribute(context.Background(), path.Root("file_count"), &count))
 	if !count.Equal(types.Int64Value(int64(len(want)))) {

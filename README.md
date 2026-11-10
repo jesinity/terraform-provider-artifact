@@ -292,13 +292,17 @@ Creates deterministic ZIP archives.
 ```hcl
 resource "artifact_zip" "bundle" {
   input_dir   = "${path.module}/data"
-  output_path = "${path.module}/bundle.zip"
+  output_path = "${path.module}/.terraform/bundle.zip"
   include     = ["**/*"]
   deterministic = true
+  rebuild_on_read = true
 }
 ```
 
-Terraform will recreate the zip **only when inputs change**.
+With `rebuild_on_read = true`, refresh recreates the local ZIP from the saved
+inputs. An identical archive keeps the resource unchanged in the plan; changed
+source bytes cause a create plan. The option is off by default. See the
+[resource documentation](docs/resources/zip.md) for CI requirements and limits.
 
 ---
 

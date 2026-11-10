@@ -36,6 +36,7 @@ type ZipModel struct {
 	Include       types.List   `tfsdk:"include"` // list(string)
 	Exclude       types.List   `tfsdk:"exclude"` // list(string)
 	Deterministic types.Bool   `tfsdk:"deterministic"`
+	RebuildOnRead types.Bool   `tfsdk:"rebuild_on_read"`
 	ExtraTriggers types.Map    `tfsdk:"extra_triggers"` // map(string) to force updates
 
 	ZipSHA256 types.String `tfsdk:"zip_sha256"`
@@ -82,6 +83,10 @@ func (r *ZipResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 				Computed: true,
 				Default:  booldefault.StaticBool(true),
 			},
+			"rebuild_on_read": schema.BoolAttribute{
+				Optional:    true,
+				Description: "Rebuild the local ZIP from the saved inputs during refresh. If its bytes differ from the saved hash, plan a new resource.",
+			},
 
 			"extra_triggers": schema.MapAttribute{
 				Optional:    true,
@@ -127,7 +132,7 @@ func (r *ZipResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
-	plan.ID = types.StringValue(fmt.Sprintf("%s:%s", plan.OutputPath.ValueString(), sha))
+	plan.ID = types.StringValue(zipID(plan.OutputPath.ValueString(), sha))
 	plan.ZipSHA256 = types.StringValue(sha)
 	plan.FileCount = types.Int64Value(int64(fileCount))
 	plan.FileSize = types.Int64Value(size)
@@ -143,6 +148,29 @@ func (r *ZipResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	}
 
 	p := state.OutputPath.ValueString()
+	if state.RebuildOnRead.ValueBool() {
+		sha, fileCount, size, err := buildZip(
+			state.InputDir.ValueString(), p,
+			listToStrings(state.Include), listToStrings(state.Exclude),
+			state.Deterministic.ValueBool(),
+		)
+		if err != nil {
+			resp.Diagnostics.AddError("Zip rebuild failed", err.Error())
+			return
+		}
+		// A different archive must be planned and applied, even though the
+		// rebuilt file is now available locally for downstream consumers.
+		if state.ZipSHA256.IsNull() || state.ZipSHA256.IsUnknown() || sha != state.ZipSHA256.ValueString() {
+			resp.State.RemoveResource(ctx)
+			return
+		}
+		state.ID = types.StringValue(zipID(p, sha))
+		state.FileCount = types.Int64Value(int64(fileCount))
+		state.FileSize = types.Int64Value(size)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		return
+	}
+
 	fi, err := os.Stat(p)
 	if err != nil {
 		// File disappeared; force recreate
@@ -158,6 +186,7 @@ func (r *ZipResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 
 	state.FileSize = types.Int64Value(fi.Size())
 	state.ZipSHA256 = types.StringValue(sha)
+	state.ID = types.StringValue(zipID(p, sha))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
@@ -181,7 +210,7 @@ func (r *ZipResource) Update(ctx context.Context, req resource.UpdateRequest, re
 		return
 	}
 
-	plan.ID = types.StringValue(fmt.Sprintf("%s:%s", plan.OutputPath.ValueString(), sha))
+	plan.ID = types.StringValue(zipID(plan.OutputPath.ValueString(), sha))
 	plan.ZipSHA256 = types.StringValue(sha)
 	plan.FileCount = types.Int64Value(int64(fileCount))
 	plan.FileSize = types.Int64Value(size)
@@ -201,6 +230,10 @@ func (r *ZipResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 }
 
 // --- helpers ---
+
+func zipID(outputPath, sha string) string {
+	return fmt.Sprintf("%s:%s", outputPath, sha)
+}
 
 func listToStrings(l types.List) []string {
 	if l.IsNull() || l.IsUnknown() {
